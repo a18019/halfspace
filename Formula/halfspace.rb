@@ -13,6 +13,11 @@ class Halfspace < Formula
     bin.install ".build/release/halfspace"
   end
 
+  service do
+    run [opt_bin/"halfspace"]
+    keep_alive true
+  end
+
   test do
     assert_match "halfspace", shell_output("#{bin}/halfspace --help 2>&1", 1)
   end

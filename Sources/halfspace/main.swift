@@ -100,11 +100,7 @@ let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
 CGEvent.tapEnable(tap: tap, enable: true)
 
-print("halfspace: 全角スペース → 半角スペース変換を開始しました (Shift+Space で全角)")
-print("終了するには Ctrl+C を押してください")
-
 signal(SIGINT) { _ in
-    print("\nhalfspace: 終了します")
     exit(0)
 }
 
