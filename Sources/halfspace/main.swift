@@ -18,6 +18,7 @@ func isJapaneseIMEActive() -> Bool {
 let spaceKeyCode: Int64 = 49
 let returnKeyCode: Int64 = 36
 let escapeKeyCode: Int64 = 53
+let composingResetKeys: Set<Int64> = [36, 53, 48]
 
 // MARK: - Event tap callback
 
@@ -26,25 +27,25 @@ var isComposing = false
 
 let callback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        CGEvent.tapEnable(tap: event as! CFMachPort, enable: true)
-        return Unmanaged.passRetained(event)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+        return Unmanaged.passUnretained(event)
     }
 
     guard type == .keyDown else {
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 
     let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
     guard isJapaneseIMEActive() else {
         isComposing = false
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 
     // composing 状態の更新
-    if keyCode == returnKeyCode || keyCode == escapeKeyCode {
+    if composingResetKeys.contains(keyCode) {
         isComposing = false
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 
     if keyCode == spaceKeyCode && !isComposing {
@@ -57,7 +58,7 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
             var halfSpace: UniChar = 0x0020
             event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &halfSpace)
         }
-        return Unmanaged.passRetained(event)
+        return Unmanaged.passUnretained(event)
     }
 
     // アルファベット入力 → composing 開始
@@ -68,21 +69,25 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         let c = chars[0]
         if (c >= 0x61 && c <= 0x7A) || (c >= 0x41 && c <= 0x5A) {
             isComposing = true
+        } else {
+            isComposing = false
         }
     }
 
-    return Unmanaged.passRetained(event)
+    return Unmanaged.passUnretained(event)
 }
 
 guard AXIsProcessTrusted() else {
     print("アクセシビリティ権限が必要です")
     print("システム設定 > プライバシーとセキュリティ > アクセシビリティ で許可してください")
 
-    let options = [kAXTrustedCheckOptionPrompt.takeRetainedValue(): true] as CFDictionary
+    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
     AXIsProcessTrustedWithOptions(options)
 
     exit(1)
 }
+
+var eventTap: CFMachPort!
 
 guard let tap = CGEvent.tapCreate(
     tap: .cgSessionEventTap,
@@ -95,6 +100,7 @@ guard let tap = CGEvent.tapCreate(
     print("イベントタップの作成に失敗しました")
     exit(1)
 }
+eventTap = tap
 
 let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
