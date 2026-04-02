@@ -10,6 +10,8 @@ class Halfspace < Formula
     system "swift", "build",
            "--disable-sandbox",
            "-c", "release"
+    # アクセシビリティ権限を維持するためにアドホック署名
+    system "codesign", "-f", "-s", "-", ".build/release/halfspace"
     bin.install ".build/release/halfspace"
   end
 

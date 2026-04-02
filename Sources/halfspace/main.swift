@@ -13,17 +13,55 @@ func isJapaneseIMEActive() -> Bool {
     return id.contains("Japanese") || id.contains("japanese")
 }
 
-// MARK: - Key codes
+// MARK: - Composing detection
 
-let spaceKeyCode: Int64 = 49
-let returnKeyCode: Int64 = 36
-let escapeKeyCode: Int64 = 53
+enum ComposingState {
+    case composing, notComposing, unsupported
+}
+
+func queryComposingViaAX() -> ComposingState {
+    let systemWide = AXUIElementCreateSystemWide()
+    var focusedElement: AnyObject?
+    guard AXUIElementCopyAttributeValue(
+        systemWide, kAXFocusedUIElementAttribute as CFString, &focusedElement
+    ) == .success else {
+        return .unsupported
+    }
+    var markedRange: AnyObject?
+    let result = AXUIElementCopyAttributeValue(
+        focusedElement as! AXUIElement, "AXTextInputMarkedRange" as CFString, &markedRange
+    )
+    guard result == .success, let value = markedRange else {
+        if result.rawValue == -25205 { return .unsupported }
+        return .notComposing
+    }
+    var range = CFRange(location: 0, length: 0)
+    AXValueGetValue(value as! AXValue, .cfRange, &range)
+    return range.length > 0 ? .composing : .notComposing
+}
+
+var fallbackComposing = false
 let composingResetKeys: Set<Int64> = [36, 53, 48]
+
+func updateFallbackComposing(keyCode: Int64, event: CGEvent) {
+    if composingResetKeys.contains(keyCode) {
+        fallbackComposing = false
+        return
+    }
+    if keyCode == 49 { return }
+    if !event.flags.intersection([.maskCommand, .maskControl]).isEmpty { return }
+    var actualLen = 0
+    var chars = [UniChar](repeating: 0, count: 4)
+    event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &actualLen, unicodeString: &chars)
+    if actualLen == 1 {
+        let c = chars[0]
+        fallbackComposing = (c >= 0x61 && c <= 0x7A) || (c >= 0x41 && c <= 0x5A)
+    }
+}
 
 // MARK: - Event tap callback
 
-/// IME の変換中かどうかを追跡 — composing 中のスペースは変換操作なので触らない
-var isComposing = false
+let spaceKeyCode: Int64 = 49
 
 let callback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -38,53 +76,42 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
 
     guard isJapaneseIMEActive() else {
-        isComposing = false
+        fallbackComposing = false
         return Unmanaged.passUnretained(event)
     }
 
-    // composing 状態の更新
-    if composingResetKeys.contains(keyCode) {
-        isComposing = false
-        return Unmanaged.passUnretained(event)
-    }
-
-    if keyCode == spaceKeyCode && !isComposing {
-        if event.flags.contains(.maskShift) {
-            // Shift+Space → 全角スペース (U+3000)
-            var fullSpace: UniChar = 0x3000
-            event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &fullSpace)
-        } else {
-            // Space → 半角スペース (U+0020)
-            var halfSpace: UniChar = 0x0020
-            event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &halfSpace)
+    if keyCode == spaceKeyCode {
+        let axState = queryComposingViaAX()
+        let composing = axState == .composing || (axState == .unsupported && fallbackComposing)
+        if !composing {
+            if event.flags.contains(.maskShift) {
+                var fullSpace: UniChar = 0x3000
+                event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &fullSpace)
+                event.flags.remove(.maskShift)
+            } else {
+                var halfSpace: UniChar = 0x0020
+                event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &halfSpace)
+            }
         }
         return Unmanaged.passUnretained(event)
     }
 
-    // アルファベット入力 → composing 開始
-    var actualLen = 0
-    var chars = [UniChar](repeating: 0, count: 4)
-    event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &actualLen, unicodeString: &chars)
-    if actualLen == 1 {
-        let c = chars[0]
-        if (c >= 0x61 && c <= 0x7A) || (c >= 0x41 && c <= 0x5A) {
-            isComposing = true
-        } else {
-            isComposing = false
-        }
-    }
+    updateFallbackComposing(keyCode: keyCode, event: event)
 
     return Unmanaged.passUnretained(event)
 }
 
-guard AXIsProcessTrusted() else {
+if !AXIsProcessTrusted() {
     print("アクセシビリティ権限が必要です")
     print("システム設定 > プライバシーとセキュリティ > アクセシビリティ で許可してください")
 
     let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
     AXIsProcessTrustedWithOptions(options)
 
-    exit(1)
+    while !AXIsProcessTrusted() {
+        Thread.sleep(forTimeInterval: 1.0)
+    }
+    print("権限が許可されました")
 }
 
 var eventTap: CFMachPort!
